@@ -5,16 +5,59 @@
 #include <poppler/cpp/poppler-page-renderer.h>
 #include <thread>
 #include <cstring>
+#include <algorithm>
+
+#if !defined(NDEBUG)
+#  include <fstream>
+
+void dump_pgm(const std::string& filename, const poppler::image& image,
+    const std::vector<poppler::rect>& rectangles) {
+
+  auto os = std::ofstream(filename, std::ios::out);
+  os << "P2\n" << image.width() << " " << image.height() << "\n" << "255\n";
+  const auto bytes_per_row = image.bytes_per_row();
+  const auto data = image.const_data();
+  for (auto y = 0; y < image.height(); ++y) {
+    for (auto x = 0; x < image.width(); ++x) {
+      const auto on_rectangle = [&](){
+        for (const auto& r : rectangles) {
+          if ((x == r.left() || x == r.right()) && y >= r.top() && y <= r.bottom())
+            return true;
+          if ((y == r.bottom() || y == r.top()) && x >= r.left() && x <= r.right())
+            return true;
+        }
+        return false;
+      };
+      os << (on_rectangle() ? 127u :
+        static_cast<unsigned char>(data[y * bytes_per_row + x])) << " ";
+    }
+    os << "\n";
+  }
+}
+#endif
 
 namespace {
   using Rect = poppler::rect;
   using Image = poppler::image;
 
   char guess_background_color(const Image& image) {
-    return *image.const_data();
+    const auto data = image.const_data();
+    const auto right = image.width() - 1;
+    const auto bottom = (image.height() - 1) * image.bytes_per_row();
+    const auto colors = std::array<char, 4>{
+      data[0], data[right], data[bottom], data[bottom + right]
+    };
+    return *std::max_element(begin(colors), end(colors),
+      [](char a, char b) {
+        return static_cast<unsigned char>(a) < static_cast<unsigned char>(b);
+      });
   }
 
-  Rect get_used_bounds(const Image& image) {
+  Rect get_bounds(const Image& image) {
+    return { 0, 0, image.width(), image.height() };
+  }
+
+  Rect get_used_bounds(const Image& image, const Rect& rect) {
     const auto bytes_per_row = image.bytes_per_row();
     const auto data = image.const_data();
     const auto background_color = guess_background_color(image);
@@ -26,20 +69,20 @@ namespace {
       return true;
     };
 
-    const auto x1 = image.width() - 1;
-    const auto y1 = image.height() - 1;
+    const auto x1 = rect.x() + rect.width() - 1;
+    const auto y1 = rect.y() + rect.height() - 1;
 
-    auto min_y = 0;
+    auto min_y = rect.y();
     for (; min_y < y1; ++min_y)
-      if (!rect_has_background_color({ 0, min_y, x1, 1 }))
+      if (!rect_has_background_color({ rect.x(), min_y, rect.width(), 1 }))
         break;
 
     auto max_y = y1;
     for (; max_y > min_y; --max_y)
-      if (!rect_has_background_color({ 0, max_y, x1, 1 }))
+      if (!rect_has_background_color({ rect.x(), max_y, rect.width(), 1 }))
         break;
 
-    auto min_x = 0;
+    auto min_x = rect.x();
     for (; min_x < x1; ++min_x)
       if (!rect_has_background_color({ min_x, min_y, 1, max_y - min_y }))
         break;
@@ -52,38 +95,106 @@ namespace {
     return { min_x, min_y, max_x - min_x + 1, max_y - min_y + 1 };
   }
 
-  Box calculate_box(poppler::page_renderer& renderer,
-      const poppler::document& document, int index) {
-    const auto page = std::unique_ptr<poppler::page>(document.create_page(index));
-    const auto image = renderer.render_page(page.get());
-    const auto bounds = get_used_bounds(image);
-    const auto scale_x = page->page_rect().width() / image.width();
-    const auto scale_y = page->page_rect().height() / image.height();
-    return {
-      bounds.left() * scale_x,
-      page->page_rect().height() - (bounds.bottom() * scale_y),
-      bounds.right() * scale_x,
-      page->page_rect().height() - (bounds.top() * scale_y)
+  Rect indent_bounds(const Rect& bounds, int header_size, int footer_size) {
+    return Rect{
+      bounds.x(),
+      bounds.y() + header_size,
+      bounds.width(),
+      bounds.height() - (header_size + footer_size)
     };
+  }
+
+  int guess_header_size(const Image& image, const Rect& page_bounds, int max_size) {
+    max_size = std::min(max_size, image.height());
+    auto header_size = 0;
+    for (auto i = 2; i < max_size; ++i) {
+      const auto indented_bounds = indent_bounds(page_bounds, i, 0);
+      const auto reduced_bounds = get_used_bounds(image, indented_bounds);
+      if (indented_bounds.top() != reduced_bounds.top()) {
+        header_size = i;
+        i = reduced_bounds.top() - page_bounds.top();
+      }
+    }
+    return header_size;
+  }
+
+  int guess_footer_size(const Image& image, const Rect& page_bounds, int max_size) {
+    max_size = std::min(max_size, image.height());
+    auto footer_size = 0;
+    for (auto i = 2; i < max_size; ++i) {
+      const auto indented_bounds = indent_bounds(page_bounds, 0, i);
+      const auto reduced_bounds = get_used_bounds(image, indented_bounds);
+      if (indented_bounds.bottom() != reduced_bounds.bottom()) {
+        footer_size = i;
+        i = page_bounds.bottom() - reduced_bounds.bottom();
+      }
+    }
+    return footer_size;
   }
 } // namespace
 
-std::vector<Box> calculate_page_boxes(const Settings& settings) {
+std::vector<Page> analyze_pages(const Settings& settings) {
+  // silence errors
+  poppler::set_debug_error_function([](const std::string&, void*) { }, nullptr);
+
   auto document = std::unique_ptr<poppler::document>(
       poppler::document::load_from_file(settings.input_file.u8string()));
   if (!document)
     return { };
 
-  auto boxes = std::vector<Box>();
   const auto page_count = document->pages();
-  boxes.resize(page_count);
+  auto pages = std::vector<Page>(page_count);
 
   const auto work = [&](int begin, int end) {
     auto renderer = poppler::page_renderer();
     renderer.set_image_format(Image::format_gray8);
+    if (settings.high_quality) {
+      renderer.set_render_hint(poppler::page_renderer::antialiasing);
+      renderer.set_render_hint(poppler::page_renderer::text_antialiasing);
+      renderer.set_render_hint(poppler::page_renderer::text_hinting);
+    }
 
-    for (auto i = begin; i < end; ++i)
-      boxes[i] = calculate_box(renderer, *document, i);
+    for (auto i = begin; i < end; ++i) {
+      const auto page = std::unique_ptr<poppler::page>(document->create_page(i));
+      const auto image = renderer.render_page(page.get(),
+        settings.resolution, settings.resolution);
+      const auto page_rect = page->page_rect();
+      const auto scale_x = page_rect.width() / image.width();
+      const auto scale_y = page_rect.height() / image.height();
+      const auto page_bounds = get_used_bounds(image, get_bounds(image));
+
+      const auto bounds_to_box = [&](const Rect& bounds) -> Box {
+        return {
+          bounds.left() * scale_x,
+          page_rect.height() - (bounds.bottom() * scale_y),
+          bounds.right() * scale_x,
+          page_rect.height() - (bounds.top() * scale_y)
+        };
+      };
+
+      pages[i].bounding_box = bounds_to_box(page_bounds);
+
+      if (settings.max_header_size || settings.max_footer_size) {
+        const auto header_size = guess_header_size(image, page_bounds,
+          static_cast<int>(settings.max_header_size / scale_y));
+        const auto footer_size = guess_footer_size(image, page_bounds,
+          static_cast<int>(settings.max_footer_size / scale_y));
+        pages[i].header = header_size * scale_y;
+        pages[i].footer = footer_size * scale_y;
+        pages[i].bounding_box_no_header = bounds_to_box(
+            get_used_bounds(image, indent_bounds(page_bounds, header_size, 0)));
+        pages[i].bounding_box_no_footer = bounds_to_box(
+            get_used_bounds(image, indent_bounds(page_bounds, 0, footer_size)));
+        pages[i].bounding_box_no_header_footer = bounds_to_box(
+            get_used_bounds(image, indent_bounds(page_bounds, header_size, footer_size)));
+
+#if 0 && !defined (NDEBUG)
+        if (i == 27)
+          dump_pgm("page.pgm", image, { page_bounds,
+            indent_bounds(page_bounds, header_size, footer_size) });
+#endif
+      }
+    }
   };
 
   auto threads = std::vector<std::thread>();
@@ -97,5 +208,5 @@ std::vector<Box> calculate_page_boxes(const Settings& settings) {
   for (auto& thread : threads)
     thread.join();
 
-  return boxes;
+  return pages;
 }

@@ -11,13 +11,15 @@ int main(int argc, const char* argv[]) try {
     print_help_message(argv[0]);
     return 1;
   }
-  auto boxes = calculate_page_boxes(settings);
-  if (boxes.empty())
+  auto pages = analyze_pages(settings);
+  if (pages.empty()) {
+    std::fprintf(stderr, "reading input file failed\n");
     return 1;
+  }
 
-  optimize_boxes(settings, boxes);
+  optimize_boxes(settings, pages);
 
-  output_with_boxes(settings, boxes);
+  output_with_boxes(settings, pages);
   return 0;
 }
 catch (const std::exception& ex) {

@@ -12,10 +12,10 @@ namespace {
       const auto original_box = handle.getArrayAsRectangle();
       page.replaceKey(box_name, QPDFObjectHandle::newArray(
         QPDFObjectHandle::Rectangle{
-          std::max(box.llx, original_box.llx),
-          std::max(box.lly, original_box.lly),
-          std::min(box.urx, original_box.urx),
-          std::min(box.ury, original_box.ury)
+          std::max(box.llx, 0.0) + original_box.llx,
+          std::max(box.lly, 0.0) + original_box.lly,
+          std::min(box.urx, original_box.urx - original_box.llx) + original_box.llx,
+          std::min(box.ury, original_box.ury - original_box.lly) + original_box.lly
         }));
     }
   }
@@ -26,14 +26,15 @@ namespace {
   }
 } // namespace
 
-void output_with_boxes(const Settings& settings, const std::vector<Box>& boxes) {
+void output_with_boxes(const Settings& settings, const std::vector<Page>& pages) {
   auto pdf = QPDF();
+  pdf.setSuppressWarnings(true);
   pdf.processFile(settings.input_file.u8string().c_str());
 
   auto i = 0;
   for (QPDFPageObjectHelper& ph : QPDFPageDocumentHelper(pdf).getAllPages()) {
     auto page = ph.getObjectHandle();
-    update_boxes(page, boxes.at(i));
+    update_boxes(page, pages.at(i).bounding_box);
     ++i;
   }
 

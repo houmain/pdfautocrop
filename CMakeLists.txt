@@ -21,3 +21,5 @@ target_link_libraries(${PROJECT_NAME} poppler-cpp qpdf)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} Threads::Threads)
+
+install(TARGETS ${PROJECT_NAME} DESTINATION "bin")
