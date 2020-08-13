@@ -14,6 +14,15 @@ namespace {
 bool interpret_commandline(Settings& settings, int argc, const char* argv[]) {
   for (auto i = 1; i < argc; i++) {
     const auto argument = std::string_view(argv[i]);
+
+    const auto get_optional_int = [&](int default_value) {
+      if (auto value = (i < argc ? std::atoi(argv[i]) : 0)) {
+        ++i;
+        return value;
+      }
+      return default_value;
+    };
+
     if (argument == "-i" || argument == "--input") {
       if (++i >= argc)
         return false;
@@ -24,15 +33,11 @@ bool interpret_commandline(Settings& settings, int argc, const char* argv[]) {
         return false;
       settings.output_file = std::filesystem::u8path(unquote(argv[i]));
     }
-    else if (argument == "-hs" || argument == "--header-size") {
-      if (++i >= argc)
-        return false;
-      settings.max_header_size = std::atoi(argv[i]);
+    else if (argument == "-ch" || argument == "--crop-header") {
+      settings.crop_header_size = get_optional_int(30);
     }
-    else if (argument == "-fs" || argument == "--footer-size") {
-      if (++i >= argc)
-        return false;
-      settings.max_footer_size = std::atoi(argv[i]);
+    else if (argument == "-cf" || argument == "--crop-footer") {
+      settings.crop_footer_size = get_optional_int(30);
     }
     else if (argument == "-co" || argument == "--crop-outlier") {
       settings.crop_outlier = true;
@@ -41,9 +46,6 @@ bool interpret_commandline(Settings& settings, int argc, const char* argv[]) {
       if (++i >= argc)
         return false;
       settings.resolution = std::atof(argv[i]);
-    }
-    else if (argument == "-hq" || argument == "--high-quality") {
-      settings.high_quality = true;
     }
     else if (argument == "-m" || argument == "--margin") {
       if (++i >= argc)
@@ -121,18 +123,17 @@ void print_help_message(const char* argv0) {
     "Usage: %s [-options] [input]\n"
     "  -i,  --input <file>      input PDF filename.\n"
     "  -o,  --output <file>     output PDF filename.\n"
-    "  -hs, --header-size <pt>  maximum detected header size (default: %.0f).\n"
-    "  -fs, --footer-size <pt>  maximum detected footer size (default: %.0f).\n"
+    "  -ch, --crop-header [pt]  try to crop page headers.\n"
+    "  -cf, --crop-footer [pt]  try to crop page footers.\n"
+    "  -co, --crop-outlier      crop pages with larger than average extent.\n"
     "  -m,  --margin <pt>       margin to add to each cropped page (default: %.0f).\n"
     "      also available: margin-left, -right, -top, -bottom, -inner, -outer\n"
-    "  -co, --crop-outlier      crop pages with larger than average extent.\n"
     "  -r,  --resolution <dpi>  resolution of internal rendering (default: %.0f).\n"
-    "  -hq, --high-quality      enable hinted and antialiased internal rendering.\n"
     "  -h,  --help              print this help.\n"
     "\n"
     "All Rights Reserved.\n"
     "This program comes with absolutely no warranty.\n"
     "See the GNU General Public License, version 3 for details.\n"
     "\n", version, program.c_str(),
-    defaults.max_header_size, defaults.max_footer_size, defaults.margin_left, defaults.resolution);
+    defaults.margin_left, defaults.resolution);
 }

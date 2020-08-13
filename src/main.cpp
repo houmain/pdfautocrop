@@ -19,7 +19,7 @@ int main(int argc, const char* argv[]) try {
 
   optimize_boxes(settings, pages);
 
-  output_with_boxes(settings, pages);
+  output_pages(settings, pages);
   return 0;
 }
 catch (const std::exception& ex) {

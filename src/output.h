@@ -2,4 +2,4 @@
 
 #include "input.h"
 
-void output_with_boxes(const Settings& settings, const std::vector<Page>& pages);
+void output_pages(const Settings& settings, const std::vector<Page>& pages);

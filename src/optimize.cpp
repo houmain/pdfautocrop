@@ -8,7 +8,7 @@ namespace {
   std::vector<double> extract_component(const std::vector<Page>& pages, bool even, F&& get) {
     auto values = std::vector<double>();
     values.reserve((pages.size() + 1) / 2);
-    for (auto i = (even ? 0u : 1u); i < pages.size(); i += 2)
+    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2)
       values.push_back(get(pages[i]));
     return values;
   }
@@ -33,6 +33,11 @@ namespace {
       [](const Page& page) { return page.footer; });
   }
 
+  std::vector<double> remove_zero(std::vector<double> values) {
+    values.erase(std::remove(begin(values), end(values), 0), end(values));
+    return values;
+  }
+
   double calculate_mean(const std::vector<double>& values) {
     if (values.size() < 1)
       return 0.0;
@@ -53,7 +58,7 @@ namespace {
     return std::sqrt(square_sum / (values.size() - 1));
   }
 
-  std::pair<double, double> calculate_common(std::vector<double>&& values, int iterations = 1) {
+  double calculate_common(std::vector<double>&& values, int iterations = 1) {
     // calculate mean/standard deviation of all values
     auto mean = calculate_mean(values);
     auto standard_deviation = calculate_standard_deviation(values, mean);
@@ -69,33 +74,28 @@ namespace {
       mean = calculate_mean(values);
       standard_deviation = calculate_standard_deviation(values, mean);
     }
-    return { mean, standard_deviation };
+    return mean;
   }
 
-  void apply_indents(std::vector<Page>& pages, bool even) {
-    auto [header_mean, header_standard_deviation] = calculate_common(get_headers(pages, even));
-    auto [footer_mean, footer_standard_deviation] = calculate_common(get_footers(pages, even));
+  void crop_header_footer(std::vector<Page>& pages, bool even) {
+    const auto header_mean =
+      calculate_common(remove_zero(get_headers(pages, even)));
+    const auto footer_mean =
+      calculate_common(remove_zero(get_footers(pages, even)));
 
-    // check if headers/footers can be clearly distinguished from non-headers/footers
-    const auto has_headers = (header_mean / header_standard_deviation > 3);
-    const auto has_footers = (footer_mean / footer_standard_deviation > 3);
-    if (!has_headers && !has_footers)
-      return;
+    const auto max_header_deviation = header_mean / 2;
+    const auto max_footer_deviation = footer_mean / 2;
 
-    // do not remove outliers when all values are virtually the same
-    header_standard_deviation = std::max(header_standard_deviation, 1.0);
-    footer_standard_deviation = std::max(footer_standard_deviation, 1.0);
-
-    for (auto i = (even ? 0u : 1u); i < pages.size(); i += 2) {
+    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2) {
       auto& page = pages[i];
-      const auto page_has_header = has_headers &&
-        std::abs(page.header - header_mean) < header_standard_deviation;
-      const auto page_has_footer = has_footers &&
-        std::abs(page.footer - footer_mean) < footer_standard_deviation;
-      if (page_has_header || page_has_footer)
+      const auto has_header = page.header &&
+        std::abs(page.header - header_mean) < max_header_deviation;
+      const auto has_footer = page.footer &&
+        std::abs(page.footer - footer_mean) < max_footer_deviation;
+      if (has_header || has_footer)
         page.bounding_box =
-          (page_has_header && page_has_footer ? page.bounding_box_no_header_footer :
-           page_has_header ? page.bounding_box_no_header :
+          (has_header && has_footer ? page.bounding_box_no_header_footer :
+           has_header ? page.bounding_box_no_header :
            page.bounding_box_no_footer);
     }
   }
@@ -103,13 +103,15 @@ namespace {
   void crop_outlier(std::vector<Page>& pages, bool even) {
     // remove outliers several times to find common page
     const auto iterations = 3;
-    const auto left_mean = calculate_common(get_bounds_left(pages, even), iterations).first;
-    const auto right_mean = calculate_common(get_bounds_right(pages, even), iterations).first;
+    const auto left_mean =
+      calculate_common(get_bounds_left(pages, even), iterations);
+    const auto right_mean =
+      calculate_common(get_bounds_right(pages, even), iterations);
 
     // find maximum bounds of common pages
     auto left_min = left_mean;
     auto right_max = right_mean;
-    for (auto i = (even ? 0u : 1u); i < pages.size(); i += 2) {
+    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2) {
       const auto& page = pages[i];
       if (std::abs(page.bounding_box.llx - left_mean) < 1.0)
         left_min = std::min(left_min, page.bounding_box.llx);
@@ -118,7 +120,7 @@ namespace {
     }
 
     // clamp all pages to common page
-    for (auto i = (even ? 0u : 1u); i < pages.size(); i += 2) {
+    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2) {
       auto& page = pages[i];
       page.bounding_box.llx = std::max(page.bounding_box.llx, left_min);
       page.bounding_box.urx = std::min(page.bounding_box.urx, right_max);
@@ -128,7 +130,7 @@ namespace {
   void apply_margins(const Settings& settings,
       std::vector<Page>& pages, bool even) {
 
-    for (auto i = (even ? 0u : 1u); i < pages.size(); i += 2) {
+    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2) {
       auto& box = pages[i].bounding_box;
       box.llx -= settings.margin_left;
       box.lly -= settings.margin_bottom;
@@ -146,8 +148,8 @@ namespace {
   }
 
   void optimize_boxes(const Settings& settings, std::vector<Page>& pages, bool even) {
-    if (settings.max_footer_size || settings.max_header_size)
-      apply_indents(pages, even);
+    if (settings.crop_footer_size || settings.crop_header_size)
+      crop_header_footer(pages, even);
 
     if (settings.crop_outlier)
       crop_outlier(pages, even);

@@ -105,12 +105,15 @@ namespace {
   }
 
   int guess_header_size(const Image& image, const Rect& page_bounds, int max_size) {
+    const auto max_space_within = 5;
     max_size = std::min(max_size, image.height());
     auto header_size = 0;
-    for (auto i = 2; i < max_size; ++i) {
+    for (auto i = 1; i < max_size; ++i) {
       const auto indented_bounds = indent_bounds(page_bounds, i, 0);
       const auto reduced_bounds = get_used_bounds(image, indented_bounds);
       if (indented_bounds.top() != reduced_bounds.top()) {
+        if (header_size && i > header_size + max_space_within)
+          break;
         header_size = i;
         i = reduced_bounds.top() - page_bounds.top();
       }
@@ -119,17 +122,59 @@ namespace {
   }
 
   int guess_footer_size(const Image& image, const Rect& page_bounds, int max_size) {
+    const auto max_space_within = 5;
     max_size = std::min(max_size, image.height());
     auto footer_size = 0;
-    for (auto i = 2; i < max_size; ++i) {
+    for (auto i = 1; i < max_size; ++i) {
       const auto indented_bounds = indent_bounds(page_bounds, 0, i);
       const auto reduced_bounds = get_used_bounds(image, indented_bounds);
       if (indented_bounds.bottom() != reduced_bounds.bottom()) {
+        if (footer_size && i > footer_size + max_space_within)
+          break;
         footer_size = i;
         i = page_bounds.bottom() - reduced_bounds.bottom();
       }
     }
     return footer_size;
+  }
+
+  poppler::image transform(poppler::image&& image,
+      poppler::page::orientation_enum orientation) {
+
+    const auto w = image.width();
+    const auto h = image.height();
+    const auto bytes_per_row = image.bytes_per_row();
+
+    if (orientation == poppler::page::landscape) {
+      auto rotated = poppler::image(h, w, poppler::image::format_gray8);
+      const auto rotated_bytes_per_row = rotated.bytes_per_row();
+      for (auto y = 0; y < h; ++y)
+        for (auto x = 0; x < w; ++x)
+          rotated.data()[x * rotated_bytes_per_row + y] =
+            image.const_data()[y * bytes_per_row + (w - 1 - x)];
+      return rotated;
+    }
+
+    if (orientation == poppler::page::seascape) {
+      auto rotated = poppler::image(h, w, poppler::image::format_gray8);
+      const auto rotated_bytes_per_row = rotated.bytes_per_row();
+      for (auto y = 0; y < h; ++y)
+        for (auto x = 0; x < w; ++x)
+          rotated.data()[x * rotated_bytes_per_row + (h - 1 - y)] =
+            image.const_data()[y * bytes_per_row + x];
+      return rotated;
+    }
+
+    if (orientation == poppler::page::upside_down) {
+      auto upside_down = poppler::image(w, h, poppler::image::format_gray8);
+      for (auto y = 0; y < h; ++y)
+        for (auto x = 0; x < w; ++x)
+          upside_down.data()[(h - 1 - y) * bytes_per_row + (w - 1 - x)] =
+            image.const_data()[y * bytes_per_row + x];
+      return upside_down;
+    }
+
+    return image;
   }
 } // namespace
 
@@ -156,29 +201,31 @@ std::vector<Page> analyze_pages(const Settings& settings) {
 
     for (auto i = begin; i < end; ++i) {
       const auto page = std::unique_ptr<poppler::page>(document->create_page(i));
-      const auto image = renderer.render_page(page.get(),
-        settings.resolution, settings.resolution);
-      const auto page_rect = page->page_rect();
-      const auto scale_x = page_rect.width() / image.width();
-      const auto scale_y = page_rect.height() / image.height();
+      const auto image = transform(renderer.render_page(page.get(),
+        settings.resolution, settings.resolution), page->orientation());
+
       const auto page_bounds = get_used_bounds(image, get_bounds(image));
 
-      const auto bounds_to_box = [&](const Rect& bounds) -> Box {
-        return {
+      const auto page_width = page->page_rect().width();
+      const auto page_height = page->page_rect().height();
+      const auto scale_x = page_width / image.width();
+      const auto scale_y = page_height / image.height();
+      const auto bounds_to_box = [&](const Rect& bounds) {
+        return Box{
           bounds.left() * scale_x,
-          page_rect.height() - (bounds.bottom() * scale_y),
+          page_height - bounds.bottom() * scale_y,
           bounds.right() * scale_x,
-          page_rect.height() - (bounds.top() * scale_y)
+          page_height - bounds.top() * scale_y
         };
       };
 
       pages[i].bounding_box = bounds_to_box(page_bounds);
 
-      if (settings.max_header_size || settings.max_footer_size) {
+      if (settings.crop_header_size || settings.crop_footer_size) {
         const auto header_size = guess_header_size(image, page_bounds,
-          static_cast<int>(settings.max_header_size / scale_y));
+          static_cast<int>(settings.crop_header_size / scale_y));
         const auto footer_size = guess_footer_size(image, page_bounds,
-          static_cast<int>(settings.max_footer_size / scale_y));
+          static_cast<int>(settings.crop_footer_size / scale_y));
         pages[i].header = header_size * scale_y;
         pages[i].footer = footer_size * scale_y;
         pages[i].bounding_box_no_header = bounds_to_box(
