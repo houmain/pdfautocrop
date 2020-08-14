@@ -4,12 +4,19 @@
 #include <algorithm>
 
 namespace {
-  template<typename F>
+  template <typename Pages, typename F>
+  void for_each_page(Pages& pages, bool even, F&& function) {
+    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2)
+      function(pages[i]);
+  }
+
+  template <typename F>
   std::vector<double> extract_component(const std::vector<Page>& pages, bool even, F&& get) {
     auto values = std::vector<double>();
     values.reserve((pages.size() + 1) / 2);
-    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2)
-      values.push_back(get(pages[i]));
+    for_each_page(pages, even, [&](const Page& page) {
+      values.push_back(get(page));
+    });
     return values;
   }
 
@@ -58,23 +65,32 @@ namespace {
     return std::sqrt(square_sum / (values.size() - 1));
   }
 
-  double calculate_common(std::vector<double>&& values, int iterations = 1) {
+  struct Distribution {
+    double mean;
+    double deviation;
+  };
+
+  bool is_outlier(double value, const Distribution& distribution) {
+    return std::abs(value - distribution.mean) > distribution.deviation;
+  }
+
+  Distribution calculate_distribution(const std::vector<double>& values) {
+    const auto mean = calculate_mean(values);
+    const auto standard_deviation = calculate_standard_deviation(values, mean);
+    return { mean, standard_deviation };
+  }
+
+  double calculate_common(std::vector<double>&& values) {
     // calculate mean/standard deviation of all values
-    auto mean = calculate_mean(values);
-    auto standard_deviation = calculate_standard_deviation(values, mean);
+    const auto distribution = calculate_distribution(values);
 
-    for (auto i = 0; i < iterations; i++) {
-      // remove outliers
-      values.erase(std::remove_if(begin(values), end(values),
-        [&](const auto value) {
-          return std::abs(value - mean) > standard_deviation;
-        }), values.end());
+    // remove outliers
+    values.erase(std::remove_if(begin(values), end(values),
+      [&](const auto value) { return is_outlier(value, distribution); }),
+      values.end());
 
-      // calculate mean/standard deviation of common values
-      mean = calculate_mean(values);
-      standard_deviation = calculate_standard_deviation(values, mean);
-    }
-    return mean;
+    // calculate mean of common values
+    return calculate_mean(values);
   }
 
   void crop_header_footer(std::vector<Page>& pages, bool even) {
@@ -82,56 +98,48 @@ namespace {
       calculate_common(remove_zero(get_headers(pages, even)));
     const auto footer_mean =
       calculate_common(remove_zero(get_footers(pages, even)));
-
     const auto max_header_deviation = header_mean / 2;
     const auto max_footer_deviation = footer_mean / 2;
 
-    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2) {
-      auto& page = pages[i];
+    for_each_page(pages, even, [&](Page& page) {
       const auto has_header = page.header &&
-        std::abs(page.header - header_mean) < max_header_deviation;
+        !is_outlier(page.header, { header_mean, max_header_deviation });
       const auto has_footer = page.footer &&
-        std::abs(page.footer - footer_mean) < max_footer_deviation;
+        !is_outlier(page.footer, { footer_mean, max_footer_deviation });
       if (has_header || has_footer)
         page.bounding_box =
           (has_header && has_footer ? page.bounding_box_no_header_footer :
            has_header ? page.bounding_box_no_header :
            page.bounding_box_no_footer);
-    }
+    });
   }
 
   void crop_outlier(std::vector<Page>& pages, bool even) {
-    // remove outliers several times to find common page
-    const auto iterations = 3;
-    const auto left_mean =
-      calculate_common(get_bounds_left(pages, even), iterations);
-    const auto right_mean =
-      calculate_common(get_bounds_right(pages, even), iterations);
+    const auto left = calculate_distribution(get_bounds_left(pages, even));
+    const auto right = calculate_distribution(get_bounds_right(pages, even));
 
     // find maximum bounds of common pages
-    auto left_min = left_mean;
-    auto right_max = right_mean;
-    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2) {
-      const auto& page = pages[i];
-      if (std::abs(page.bounding_box.llx - left_mean) < 1.0)
+    auto left_min = left.mean;
+    auto right_max = right.mean;
+    for_each_page(pages, even, [&](const Page& page) {
+      if (!is_outlier(page.bounding_box.llx, left))
         left_min = std::min(left_min, page.bounding_box.llx);
-      if (std::abs(page.bounding_box.urx - right_mean) < 1.0)
+      if (!is_outlier(page.bounding_box.urx, right))
         right_max = std::max(right_max, page.bounding_box.urx);
-    }
+    });
 
-    // clamp all pages to common page
-    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2) {
-      auto& page = pages[i];
-      page.bounding_box.llx = std::max(page.bounding_box.llx, left_min);
-      page.bounding_box.urx = std::min(page.bounding_box.urx, right_max);
-    }
+    // clamp outliers to common page
+    for_each_page(pages, even, [&](Page& page) {
+      if (is_outlier(page.bounding_box.llx, left))
+        page.bounding_box.llx = std::max(page.bounding_box.llx, left_min);
+      if (is_outlier(page.bounding_box.urx, right))
+        page.bounding_box.urx = std::min(page.bounding_box.urx, right_max);
+    });
   }
 
-  void apply_margins(const Settings& settings,
-      std::vector<Page>& pages, bool even) {
-
-    for (auto i = (even ? 1u : 0u); i < pages.size(); i += 2) {
-      auto& box = pages[i].bounding_box;
+  void apply_margins(const Settings& settings, std::vector<Page>& pages, bool even) {
+    for_each_page(pages, even, [&](Page& page) {
+      auto& box = page.bounding_box;
       box.llx -= settings.margin_left;
       box.lly -= settings.margin_bottom;
       box.urx += settings.margin_right;
@@ -144,7 +152,7 @@ namespace {
         box.llx -= settings.margin_outer;
         box.urx += settings.margin_inner;
       }
-    }
+    });
   }
 
   void optimize_boxes(const Settings& settings, std::vector<Page>& pages, bool even) {

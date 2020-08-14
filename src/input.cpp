@@ -105,8 +105,8 @@ namespace {
   }
 
   int guess_header_size(const Image& image, const Rect& page_bounds, int max_size) {
-    const auto max_space_within = 5;
     max_size = std::min(max_size, image.height());
+    const auto max_space_within = max_size / 3;
     auto header_size = 0;
     for (auto i = 1; i < max_size; ++i) {
       const auto indented_bounds = indent_bounds(page_bounds, i, 0);
@@ -122,8 +122,8 @@ namespace {
   }
 
   int guess_footer_size(const Image& image, const Rect& page_bounds, int max_size) {
-    const auto max_space_within = 5;
     max_size = std::min(max_size, image.height());
+    const auto max_space_within = max_size / 3;
     auto footer_size = 0;
     for (auto i = 1; i < max_size; ++i) {
       const auto indented_bounds = indent_bounds(page_bounds, 0, i);
