@@ -1,3 +1,5 @@
+# pdfautocrop
+A command line tool for automatically cropping the margins of PDF files.
 
     Usage: pdfautocrop [-options] [input]
       -i,  --input <file>      input PDF filename.
@@ -9,7 +11,3 @@
           also available: margin-left, -right, -top, -bottom, -inner, -outer
       -r,  --resolution <dpi>  resolution of internal rendering (default: 96).
       -h,  --help              print this help.
-
-    All Rights Reserved.
-    This program comes with absolutely no warranty.
-    See the GNU General Public License, version 3 for details.
