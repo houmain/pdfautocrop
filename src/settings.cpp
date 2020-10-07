@@ -16,7 +16,7 @@ bool interpret_commandline(Settings& settings, int argc, const char* argv[]) {
     const auto argument = std::string_view(argv[i]);
 
     const auto get_optional_int = [&](int default_value) {
-      if (auto value = (i < argc ? std::atoi(argv[i]) : 0)) {
+      if (auto value = (i < argc ? std::atoi(argv[i + 1]) : 0)) {
         ++i;
         return value;
       }
